@@ -1,2 +1,3 @@
 tesseract-ocr
 libjpeg62-turbo
+libheif1             # ← NEW
