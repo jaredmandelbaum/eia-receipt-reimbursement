@@ -71,12 +71,38 @@ def open_first_worksheet(url: str) -> gspread.Worksheet:
 
 
 # ────────────────────────── OCR helpers ──────────────────────────
-def safe_ocr(img: Image.Image) -> str:
-    try:
-        return pytesseract.image_to_string(img)
-    except TypeError:
-        return pytesseract.image_to_string(np.array(img))
+from PIL import Image, ImageFilter, ImageOps
 
+def preprocess(img: Image.Image) -> Image.Image:
+    """
+    • Convert to 300 DPI grayscale
+    • Auto-increase contrast
+    • Binarise with Otsu threshold
+    • Slightly sharpen
+    """
+    # upscale small phone pics to ~300 DPI
+    if max(img.size) < 1500:
+        scale = 1500 / max(img.size)
+        img = img.resize(
+            (int(img.width * scale), int(img.height * scale)),
+            resample=Image.LANCZOS,
+        )
+
+    gray = ImageOps.grayscale(img)
+    # autocontrast flattens low-contrast scans
+    gray = ImageOps.autocontrast(gray, cutoff=2)
+    # PIL’s built-in point-threshold using Otsu
+    thresh = gray.point(lambda x: 255 if x > ImageOps.autocontrast(gray).getextrema()[1] * 0.5 else 0)
+    # gentle sharpen
+    return thresh.filter(ImageFilter.SHARPEN)
+
+
+def safe_ocr(img: Image.Image) -> str:
+    img = preprocess(img)
+    return pytesseract.image_to_string(
+        img,
+        config="--oem 3 --psm 6",  # LSTM engine, assume a single text block
+    )
 
 def load_uploaded_image(uploaded) -> Image.Image:
     try:
