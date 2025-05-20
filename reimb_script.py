@@ -2,39 +2,55 @@
 Receipt → Google Sheets Reimbursement Tool
 =========================================
 
-• Drag-and-drop one **or many** receipt images (PNG / JPG).  
+• Drag-and-drop one **or many** receipt images (PNG / JPEG).  
 • OCR each image with Tesseract.  
-• Append data to the first empty template rows of the user’s Google Sheet
-  (columns A-F and I-J only). Columns G & H (formulas) are left untouched.
+• Append every receipt to the first empty template rows of the user’s Google Sheet  
+  – **only** columns A-F and I-J are written (G & H formulas untouched).  
 
-2025-05-20  – multi-file version, improved JPEG error reporting
+2025-05-20  
+• Multi-file upload, JPEG runtime fix (libjpeg)  
+• Bigger heading via Markdown  
+• Robust service-account JSON parsing (escapes PEM new-lines)
 """
 
 import json, re, traceback
 from io import BytesIO
+from typing import List
 
 import gspread, numpy as np, pytesseract, streamlit as st
 from PIL import Image, UnidentifiedImageError
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
-# ─────────────────────── Google-Sheets helpers ───────────────────────
-SERVICE_EMAIL = (
-    "jared-eia-reimbursements@reimbursements-460316.iam.gserviceaccount.com"
-)
+# ────────────────────────── Config ──────────────────────────
+SERVICE_EMAIL = "jared-eia-reimbursements@reimbursements-460316.iam.gserviceaccount.com"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-def get_gsheet_client():
-    """Authorise with the service account (reads creds from st.secrets on Cloud)."""
-    if "GOOGLE_CREDS" in st.secrets:                                   # Streamlit Cloud
-        creds_info = json.loads(st.secrets["GOOGLE_CREDS"])
+FIRST_DATA_ROW = 19   # first template row (under header)
+DATE_COL        = 2   # column B, 1-based
+
+# ───────────── Google Sheets helpers ─────────────
+def get_gsheet_client() -> gspread.Client:
+    """
+    Authorise via service-account.
+
+    • In Streamlit Cloud the key lives in st.secrets["GOOGLE_CREDS"] as a *raw*
+      JSON string with real new-lines inside the private_key.  Replace those
+      with literal \\n so json.loads() succeeds.
+    • Locally we fall back to credentials.json in the repo root.
+    """
+    if "GOOGLE_CREDS" in st.secrets:                       # 🚀 Cloud
+        raw = st.secrets["GOOGLE_CREDS"]
+        escaped = raw.replace("\n", "\\n")
+        creds_info = json.loads(escaped)
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    else:                                                              # local dev
+    else:                                                  # 🛠️ Local dev
         creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
     return gspread.authorize(creds)
+
 
 def extract_sheet_id(url: str) -> str:
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", url)
@@ -42,21 +58,24 @@ def extract_sheet_id(url: str) -> str:
         raise ValueError("That doesn’t look like a Google Sheets link.")
     return m.group(1)
 
-def open_first_worksheet(url: str):
+
+def open_first_worksheet(url: str) -> gspread.Worksheet:
     return get_gsheet_client().open_by_key(extract_sheet_id(url)).sheet1
 
-# ───────────────────────────── OCR helpers ───────────────────────────
-def safe_ocr(img):
+
+# ────────────── OCR helpers ──────────────
+def safe_ocr(img: Image.Image) -> str:
     try:
         return pytesseract.image_to_string(img)
-    except TypeError:                                                   # exotic formats
+    except TypeError:                              # missing Pillow metadata
         return pytesseract.image_to_string(np.array(img))
 
-def load_uploaded_image(uploaded):
+
+def load_uploaded_image(uploaded) -> Image.Image:
     try:
         data = uploaded.read()
         img = Image.open(BytesIO(data))
-        img.load()                                                      # force decoding
+        img.load()                                 # force decode now
         return img
     except UnidentifiedImageError as e:
         raise ValueError(
@@ -65,17 +84,16 @@ def load_uploaded_image(uploaded):
             f"(Pillow error: {e})"
         ) from e
     except Exception as e:
-        raise ValueError(
-            f"Unexpected error reading image: {e}"
-        ) from e
+        raise ValueError(f"Unexpected error reading image: {e}") from e
 
-def extract_receipt_data(img):
+
+def extract_receipt_data(img: Image.Image) -> dict:
     text = safe_ocr(img)
+    g = lambda m: m.group(1) if m else ""
 
     date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", text)
-    amt   = re.search(r"\b([\\$€£]?[0-9,]+\.\d{2})\b", text)
+    amt   = re.search(r"\b([\\$€£]?[0-9,]+\.\d{2})\b",         text)
     curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", text)
-    g = lambda m: m.group(1) if m else ""
 
     return {
         "Date":          g(date),
@@ -87,18 +105,17 @@ def extract_receipt_data(img):
         "Receipt (Y/N)":  "Y",
     }
 
-# ────────────────────────── Streamlit UI ────────────────────────────
-st.title("Receipt → Google Sheets Reimbursement Tool")
 
+# ───────────── Streamlit UI ─────────────
 st.markdown(
     f"""
 ### 📎 Step 1 – Drag-and-drop one or more PNG/JPEG receipts  
-### 🔗 Step 2 – Share your trip reimbursement Google Sheet document with `{SERVICE_EMAIL}` as an **editor**. Then paste the link to this Google Sheet below.  
+### 🔗 Step 2 – Paste the link to **your own** Google Sheet and share it with `{SERVICE_EMAIL}` as **Editor** (one-time step)  
 ### ✅ Step 3 – Click *Extract & Send*  
 """,
 )
 
-uploads = st.file_uploader(
+uploads: List["UploadedFile"] = st.file_uploader(
     "Receipt images", type=["png", "jpg", "jpeg"], accept_multiple_files=True
 )
 sheet_url = st.text_input("Google Sheet URL")
@@ -109,18 +126,17 @@ if st.button("Extract & Send"):
         st.stop()
 
     try:
-        # 1⃣  OCR all receipts
-        receipts = [extract_receipt_data(load_uploaded_image(upl)) for upl in uploads]
+        receipts = [extract_receipt_data(load_uploaded_image(u)) for u in uploads]
 
-        # 2⃣  Open sheet and find first empty row (where Date column is blank)
         ws = open_first_worksheet(sheet_url)
-        FIRST_DATA_ROW, DATE_COL = 19, 2
+
+        # find first empty template row (blank Date column)
         row = FIRST_DATA_ROW
         while str(ws.cell(row, DATE_COL).value).strip() not in ("", "None", "-"):
             row += 1
         start_row = row
 
-        # 3⃣  Build batch ranges (A-F and I-J) – skip formula cols G & H
+        # build payloads
         rows_af, rows_ij = [], []
         for i, r in enumerate(receipts):
             receipt_no = (start_row - FIRST_DATA_ROW) + 1 + i
@@ -131,8 +147,9 @@ if st.button("Extract & Send"):
             rows_ij.append([r["Project/ Grant"], r["Receipt (Y/N)"]])
 
         end_row = start_row + len(receipts) - 1
-        ws.update(f"A{start_row}:F{end_row}", rows_af)
-        ws.update(f"I{start_row}:J{end_row}", rows_ij)
+
+        ws.update(f"A{start_row}:F{end_row}", rows_af)   # write A-F
+        ws.update(f"I{start_row}:J{end_row}", rows_ij)   # write I-J
 
         st.success(f"Added **{len(receipts)}** receipt(s) to rows {start_row}-{end_row}!")
 
