@@ -37,23 +37,13 @@ DATE_COL        = 2   # column B, 1-based
 
 # ───────────── Google Sheets helpers ─────────────
 def get_gsheet_client() -> gspread.Client:
-    """
-    Authorise via service-account.
+    if "google_creds" in st.secrets:               # ← table variant
+        creds_info = dict(st.secrets["google_creds"])
+    else:                                          # fallback for local dev
+        creds_info = json.load(open("credentials.json", "r"))
 
-    • In Streamlit Cloud the key lives in st.secrets["GOOGLE_CREDS"]
-      as a *raw* JSON string with real new-lines; escape them so
-      json.loads() succeeds.
-    • Locally fall back to credentials.json.
-    """
-    if "GOOGLE_CREDS" in st.secrets:                       # 🚀 Cloud
-        raw = st.secrets["GOOGLE_CREDS"]
-        escaped = raw.replace("\n", "\\n")
-        creds_info = json.loads(escaped)
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    else:                                                  # 🛠️ Local dev
-        creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     return gspread.authorize(creds)
-
 
 def extract_sheet_id(url: str) -> str:
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", url)
