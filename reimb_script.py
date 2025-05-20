@@ -2,20 +2,23 @@
 Receipt → Google Sheets Reimbursement Tool
 =========================================
 
-• Drag-and-drop one **or many** receipt images (PNG / JPEG).  
+• Drag-and-drop one or many receipt images (JPEG, PNG, HEIC).  
 • OCR each image with Tesseract.  
-• Append every receipt to the first empty template rows of the user’s Google Sheet  
-  – **only** columns A-F and I-J are written (G & H formulas untouched).  
+• Append every receipt to the first empty template rows of the user’s
+  Google Sheet – columns A-F and I-J only (G & H formulas untouched).
 
 2025-05-20  
-• Multi-file upload, JPEG runtime fix (libjpeg)  
-• Bigger heading via Markdown  
-• Robust service-account JSON parsing (escapes PEM new-lines)
+• HEIC/HEIF support via pillow-heif + libheif1  
+• Robust service-account JSON parsing  
+• Multi-file upload, JPEG runtime fix, larger instructions
 """
 
 import json, re, traceback
 from io import BytesIO
 from typing import List
+
+import pillow_heif               # ⬅️  NEW – HEIC opener
+pillow_heif.register_heif_opener()
 
 import gspread, numpy as np, pytesseract, streamlit as st
 from PIL import Image, UnidentifiedImageError
@@ -37,10 +40,10 @@ def get_gsheet_client() -> gspread.Client:
     """
     Authorise via service-account.
 
-    • In Streamlit Cloud the key lives in st.secrets["GOOGLE_CREDS"] as a *raw*
-      JSON string with real new-lines inside the private_key.  Replace those
-      with literal \\n so json.loads() succeeds.
-    • Locally we fall back to credentials.json in the repo root.
+    • In Streamlit Cloud the key lives in st.secrets["GOOGLE_CREDS"]
+      as a *raw* JSON string with real new-lines; escape them so
+      json.loads() succeeds.
+    • Locally fall back to credentials.json.
     """
     if "GOOGLE_CREDS" in st.secrets:                       # 🚀 Cloud
         raw = st.secrets["GOOGLE_CREDS"]
@@ -67,7 +70,7 @@ def open_first_worksheet(url: str) -> gspread.Worksheet:
 def safe_ocr(img: Image.Image) -> str:
     try:
         return pytesseract.image_to_string(img)
-    except TypeError:                              # missing Pillow metadata
+    except TypeError:                              # missing PIL metadata
         return pytesseract.image_to_string(np.array(img))
 
 
@@ -80,7 +83,7 @@ def load_uploaded_image(uploaded) -> Image.Image:
     except UnidentifiedImageError as e:
         raise ValueError(
             "Could not open that file as an image. "
-            "Please upload a PNG or JPEG. "
+            "Please upload a PNG, JPEG, or HEIC. "
             f"(Pillow error: {e})"
         ) from e
     except Exception as e:
@@ -109,14 +112,15 @@ def extract_receipt_data(img: Image.Image) -> dict:
 # ───────────── Streamlit UI ─────────────
 st.markdown(
     f"""
-### 📎 Step 1 – Drag-and-drop one or more PNG/JPEG receipts  
+### 📎 Step 1 – Drag-and-drop one or more PNG/JPEG/HEIC receipts  
 ### 🔗 Step 2 – Paste the link to **your own** Google Sheet and share it with `{SERVICE_EMAIL}` as **Editor** (one-time step)  
 ### ✅ Step 3 – Click *Extract & Send*  
 """,
 )
 
 uploads: List["UploadedFile"] = st.file_uploader(
-    "Receipt images", type=["png", "jpg", "jpeg"], accept_multiple_files=True
+    "Receipt images", type=["png", "jpg", "jpeg", "heic", "heif"],
+    accept_multiple_files=True,
 )
 sheet_url = st.text_input("Google Sheet URL")
 
