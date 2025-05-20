@@ -1,0 +1,7 @@
+streamlit==1.*
+gspread==6.*
+google-auth==2.*
+google-auth-oauthlib==1.*
+pytesseract==0.*
+pillow==10.*
+numpy==1.*
