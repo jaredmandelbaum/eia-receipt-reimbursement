@@ -20,7 +20,7 @@ from typing import List
 import pillow_heif                       # HEIC/HEIF support
 pillow_heif.register_heif_opener()
 
-import gspread, numpy as np, pytesseract, streamlit as st
+import gspread, numpy as np, pytesseract, streamlit as st, cv2
 from PIL import Image, UnidentifiedImageError
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
@@ -39,19 +39,10 @@ DATE_COL        = 2   # column B (1-based index)
 
 # ─────────── Google-Sheets auth & helpers ────────────
 def get_gsheet_client() -> gspread.Client:
-    """
-    Authorise with a Google service-account.
-
-    • In Streamlit Cloud the secret is stored as a **single-line Base-64 string**
-      under st.secrets["GCREDS_B64"].
-    • When developing locally it falls back to credentials.json.
-    """
-    if "GCREDS_B64" in st.secrets:                 # Cloud runtime
-        raw_json = base64.b64decode(
-            st.secrets["GCREDS_B64"]
-        ).decode("utf-8")
+    if "GCREDS_B64" in st.secrets:
+        raw_json = base64.b64decode(st.secrets["GCREDS_B64"]).decode("utf-8")
         creds_info = json.loads(raw_json)
-    else:                                          # local dev
+    else:
         with open("credentials.json", "r", encoding="utf-8") as fh:
             creds_info = json.load(fh)
 
@@ -70,39 +61,45 @@ def open_first_worksheet(url: str) -> gspread.Worksheet:
     return get_gsheet_client().open_by_key(extract_sheet_id(url)).sheet1
 
 
-# ────────────────────────── OCR helpers ──────────────────────────
-from PIL import Image, ImageFilter, ImageOps
-
-def preprocess(img: Image.Image) -> Image.Image:
-    """
-    • Convert to 300 DPI grayscale
-    • Auto-increase contrast
-    • Binarise with Otsu threshold
-    • Slightly sharpen
-    """
-    # upscale small phone pics to ~300 DPI
-    if max(img.size) < 1500:
-        scale = 1500 / max(img.size)
-        img = img.resize(
-            (int(img.width * scale), int(img.height * scale)),
-            resample=Image.LANCZOS,
-        )
-
-    gray = ImageOps.grayscale(img)
-    # autocontrast flattens low-contrast scans
-    gray = ImageOps.autocontrast(gray, cutoff=2)
-    # PIL’s built-in point-threshold using Otsu
-    thresh = gray.point(lambda x: 255 if x > ImageOps.autocontrast(gray).getextrema()[1] * 0.5 else 0)
-    # gentle sharpen
-    return thresh.filter(ImageFilter.SHARPEN)
+# ──────────────────────── OCR & Extraction ────────────────────────
+def preprocess_with_cv2(pil_img: Image.Image) -> Image.Image:
+    img_np = np.array(pil_img.convert("L"))  # grayscale
+    _, binarized = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(binarized)
 
 
-def safe_ocr(img: Image.Image) -> str:
-    img = preprocess(img)
-    return pytesseract.image_to_string(
-        img,
-        config="--oem 3 --psm 6",  # LSTM engine, assume a single text block
-    )
+def improved_store_name_detection(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    keywords_to_avoid = [
+        'server', 'check', 'date', 'dob', 'amount', 'transaction',
+        'subtotal', 'visa', 'auth', 'credit', 'tip', 'total'
+    ]
+    for line in lines[:8]:
+        if all(kw.lower() not in line.lower() for kw in keywords_to_avoid):
+            return line
+    return lines[0] if lines else ""
+
+
+def extract_receipt_data(img: Image.Image) -> dict:
+    img = preprocess_with_cv2(img)
+    text = pytesseract.image_to_string(img, config="--oem 3 --psm 4")
+
+    g = lambda m: m.group(1) if m else ""
+    date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", text)
+    amt   = re.search(r"\b[\\$€£]?([0-9,]+\.\d{2})\b", text)
+    curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", text)
+    store = improved_store_name_detection(text)
+
+    return {
+        "Date":          g(date),
+        "Description":   store,
+        "Expense Type":  "",
+        "Local Amount":  g(amt).replace(",", ""),
+        "Currency":      g(curr),
+        "Project/ Grant": "",
+        "Receipt (Y/N)":  "Y",
+    }
+
 
 def load_uploaded_image(uploaded) -> Image.Image:
     try:
@@ -114,25 +111,6 @@ def load_uploaded_image(uploaded) -> Image.Image:
             "Could not open that file as an image (PNG / JPEG / HEIC only). "
             f"(Pillow error: {e})"
         ) from e
-
-
-def extract_receipt_data(img: Image.Image) -> dict:
-    text = safe_ocr(img)
-    g = lambda m: m.group(1) if m else ""
-
-    date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", text)
-    amt   = re.search(r"\b([\\$€£]?[0-9,]+\.\d{2})\b", text)
-    curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", text)
-
-    return {
-        "Date":          g(date),
-        "Description":   text.splitlines()[0] if text.strip() else "",
-        "Expense Type":  "",
-        "Local Amount":  g(amt).replace("$", "").replace("€", "").replace("£", ""),
-        "Currency":      g(curr),
-        "Project/ Grant": "",
-        "Receipt (Y/N)":  "Y",
-    }
 
 
 # ───────────────────────── Streamlit UI ─────────────────────────
