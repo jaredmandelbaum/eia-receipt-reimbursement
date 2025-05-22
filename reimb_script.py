@@ -12,7 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
-# ─────────────────────────── Config ────────────────────────────
+# ─────────────── Config ───────────────
 SERVICE_EMAIL = (
     "jared-eia-reimbursements@reimbursements-460316.iam.gserviceaccount.com"
 )
@@ -21,9 +21,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 FIRST_DATA_ROW = 19
-DATE_COL = 2  # Column B
+DATE_COL = 2  # column B (1-based index)
 
-# ─────────────── Google Sheets Auth ───────────────
+# ─────────────── Google Sheets ───────────────
 def get_gsheet_client() -> gspread.Client:
     if "GCREDS_B64" in st.secrets:
         raw_json = base64.b64decode(st.secrets["GCREDS_B64"]).decode("utf-8")
@@ -49,12 +49,12 @@ def get_ocr_reader():
     return easyocr.Reader(['en'], gpu=False)
 reader = get_ocr_reader()
 
-# ─────────────── Final EasyOCR Extraction ───────────────
+# ─────────────── OCR Extraction ───────────────
 def extract_from_easyocr(img: Image.Image) -> dict:
     result = reader.readtext(np.array(img), detail=0)
     lines = [line.strip() for line in result if line.strip()]
 
-    # Store name: first plausible business header
+    # Store name
     store = next(
         (line for line in lines[:10] if len(line) > 4 and not any(
             kw in line.lower() for kw in ["guest", "check", "server", "auth", "amount", "total", "tip", "visa", "receipt"]
@@ -62,7 +62,7 @@ def extract_from_easyocr(img: Image.Image) -> dict:
         lines[0] if lines else ""
     )
 
-    # Date extraction
+    # Date
     date = ""
     for line in lines:
         match = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", line)
@@ -70,7 +70,7 @@ def extract_from_easyocr(img: Image.Image) -> dict:
             date = match.group(1)
             break
 
-    # Total: look for label or use max amount
+    # Total
     total = ""
     all_amounts = []
     for line in lines:
@@ -79,13 +79,11 @@ def extract_from_easyocr(img: Image.Image) -> dict:
             if match:
                 total = match.group(1)
         all_amounts += re.findall(r"([0-9]+\.\d{2})", line)
-
     if not total and all_amounts:
         total = max(all_amounts, key=lambda x: float(x))
 
     return {"Date": date, "Store": store, "Total": total}
 
-# ─────────────── Image Loader ───────────────
 def load_uploaded_image(uploaded) -> Image.Image:
     try:
         img = Image.open(BytesIO(uploaded.read()))
@@ -124,17 +122,15 @@ if st.button("Extract & Send"):
             row += 1
         start_row = row
 
-        # Prepare rows: columns B (Date), C (Description), E (Amount)
-        prepared_rows = []
+        # Build rows for B (Date), C (Store), D (blank), E (Total)
+        values = []
         for r in receipts:
-            prepared_rows.append([r["Date"], r["Store"], "", r["Total"]])  # B, C, D, E
+            values.append([r["Date"], r["Store"], "", r["Total"]])
 
-        end_row = start_row + len(prepared_rows) - 1
+        end_row = start_row + len(values) - 1
+        ws.update(f"B{start_row}:E{end_row}", values)
 
-        # Update B–E
-        ws.update(f"B{start_row}:E{end_row}", prepared_rows)
-
-        st.success(f"Added **{len(receipts)}** receipt(s) to rows {start_row}–{end_row}.")
+        st.success(f"Added **{len(values)}** receipt(s) to rows {start_row}–{end_row}.")
     except ValueError as ve:
         st.error(str(ve))
     except PermissionError:
