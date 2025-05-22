@@ -67,37 +67,38 @@ def preprocess_with_cv2(pil_img: Image.Image) -> Image.Image:
     _, binarized = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return Image.fromarray(binarized)
 
+def guess_store_name(lines: list[str]) -> str:
+    def score(line, i):
+        penalty = sum(kw in line.lower() for kw in [
+            'server', 'check', 'guest', 'amount', 'tip', 'total', 'tax', 'visa', 'auth'
+        ])
+        bonus = sum(w.istitle() for w in line.split())
+        return -penalty + bonus - 0.2 * i  # earlier lines preferred
 
-def improved_store_name_detection(text: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    keywords_to_avoid = [
-        'server', 'check', 'date', 'dob', 'amount', 'transaction',
-        'subtotal', 'visa', 'auth', 'credit', 'tip', 'total'
-    ]
-    for line in lines[:8]:
-        if all(kw.lower() not in line.lower() for kw in keywords_to_avoid):
-            return line
-    return lines[0] if lines else ""
-
+    candidates = lines[:8]
+    return max(candidates, key=lambda l: score(l, candidates.index(l)), default="")
 
 def extract_receipt_data(img: Image.Image) -> dict:
-    img = preprocess_with_cv2(img)
-    text = pytesseract.image_to_string(img, config="--oem 3 --psm 4")
+    pre_img = preprocess_with_cv2(img)
+    full_text = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 4")
+    header_text = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 11")
+
+    lines = [line.strip() for line in header_text.splitlines() if line.strip()]
+    store = guess_store_name(lines)
 
     g = lambda m: m.group(1) if m else ""
-    date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", text)
-    amt   = re.search(r"\b[\\$€£]?([0-9,]+\.\d{2})\b", text)
-    curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", text)
-    store = improved_store_name_detection(text)
+    date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", full_text)
+    amt   = re.search(r"\b[\\$€£]?([0-9,]+\.\d{2})\b", full_text)
+    curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", full_text)
 
     return {
         "Date":          g(date),
-        "Description":   store,
+        "Description":   store or (lines[0] if lines else ""),
         "Expense Type":  "",
         "Local Amount":  g(amt).replace(",", ""),
         "Currency":      g(curr),
         "Project/ Grant": "",
-        "Receipt (Y/N)":  "Y",
+        "Receipt (Y/N)": "Y",
     }
 
 
