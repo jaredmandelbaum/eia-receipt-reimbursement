@@ -1,6 +1,7 @@
 streamlit
-easyocr
-numpy
 pillow
+pillow-heif
+pytesseract
+numpy
 gspread
 google-auth
