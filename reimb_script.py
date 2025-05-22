@@ -17,7 +17,7 @@ import base64, json, re, traceback
 from io import BytesIO
 from typing import List
 
-import pillow_heif                       # HEIC/HEIF support
+import pillow_heif
 pillow_heif.register_heif_opener()
 
 import gspread, numpy as np, pytesseract, streamlit as st, cv2
@@ -34,8 +34,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-FIRST_DATA_ROW = 19   # first template row (under header row)
-DATE_COL        = 2   # column B (1-based index)
+FIRST_DATA_ROW = 19
+DATE_COL        = 2
 
 # ─────────── Google-Sheets auth & helpers ────────────
 def get_gsheet_client() -> gspread.Client:
@@ -45,10 +45,8 @@ def get_gsheet_client() -> gspread.Client:
     else:
         with open("credentials.json", "r", encoding="utf-8") as fh:
             creds_info = json.load(fh)
-
     creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     return gspread.authorize(creds)
-
 
 def extract_sheet_id(url: str) -> str:
     m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", url)
@@ -56,51 +54,52 @@ def extract_sheet_id(url: str) -> str:
         raise ValueError("That doesn’t look like a Google Sheets link.")
     return m.group(1)
 
-
 def open_first_worksheet(url: str) -> gspread.Worksheet:
     return get_gsheet_client().open_by_key(extract_sheet_id(url)).sheet1
 
-
 # ──────────────────────── OCR & Extraction ────────────────────────
 def preprocess_with_cv2(pil_img: Image.Image) -> Image.Image:
-    img_np = np.array(pil_img.convert("L"))  # grayscale
+    img_np = np.array(pil_img.convert("L"))
     _, binarized = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return Image.fromarray(binarized)
 
-def guess_store_name(lines: list[str]) -> str:
+def guess_store_name(merged_lines: list[str]) -> str:
     def score(line, i):
         penalty = sum(kw in line.lower() for kw in [
             'server', 'check', 'guest', 'amount', 'tip', 'total', 'tax', 'visa', 'auth'
         ])
         bonus = sum(w.istitle() for w in line.split())
-        return -penalty + bonus - 0.2 * i  # earlier lines preferred
-
-    candidates = lines[:8]
-    return max(candidates, key=lambda l: score(l, candidates.index(l)), default="")
+        return -penalty + bonus - 0.2 * i
+    return max(merged_lines[:12], key=lambda l: score(l, merged_lines.index(l)), default="")
 
 def extract_receipt_data(img: Image.Image) -> dict:
     pre_img = preprocess_with_cv2(img)
-    full_text = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 4")
-    header_text = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 11")
 
-    lines = [line.strip() for line in header_text.splitlines() if line.strip()]
-    store = guess_store_name(lines)
+    # Dual OCR passes
+    text_4 = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 4")
+    text_11 = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 11")
+
+    # Merge and deduplicate top lines
+    lines_4 = [line.strip() for line in text_4.splitlines() if line.strip()]
+    lines_11 = [line.strip() for line in text_11.splitlines() if line.strip()]
+    merged_lines = list(dict.fromkeys(lines_11 + lines_4))  # dedup preserving order
+
+    store = guess_store_name(merged_lines)
 
     g = lambda m: m.group(1) if m else ""
-    date  = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", full_text)
-    amt   = re.search(r"\b[\\$€£]?([0-9,]+\.\d{2})\b", full_text)
-    curr  = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", full_text)
+    date = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", text_4)
+    amt = re.search(r"\b[\\$€£]?([0-9,]+\.\d{2})\b", text_4)
+    curr = re.search(r"\b(USD|EUR|GBP|JPY|CAD|AUD|INR|BRL|PEN|CNY)\b", text_4)
 
     return {
-        "Date":          g(date),
-        "Description":   store or (lines[0] if lines else ""),
-        "Expense Type":  "",
-        "Local Amount":  g(amt).replace(",", ""),
-        "Currency":      g(curr),
+        "Date": g(date),
+        "Description": store,
+        "Expense Type": "",
+        "Local Amount": g(amt).replace(",", ""),
+        "Currency": g(curr),
         "Project/ Grant": "",
         "Receipt (Y/N)": "Y",
     }
-
 
 def load_uploaded_image(uploaded) -> Image.Image:
     try:
@@ -113,11 +112,10 @@ def load_uploaded_image(uploaded) -> Image.Image:
             f"(Pillow error: {e})"
         ) from e
 
-
 # ───────────────────────── Streamlit UI ─────────────────────────
 st.markdown(
     f"""
-### 📎 Step 1 — Drag and drop one or more PNG/JPEG/HEIC receipt files
+### 📎 Step 1 — Drag and drop one or more PNG/JPEG/HEIC receipt files  
 ### 🔗 Step 2 — Paste the link to **your own** Google Sheet and share it with `{SERVICE_EMAIL}` as **editor**  
 ### ✅ Step 3 — Click *Extract & Send*  
 """,
