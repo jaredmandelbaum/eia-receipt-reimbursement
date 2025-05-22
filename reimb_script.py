@@ -137,47 +137,41 @@ sheet_url = st.text_input("Google Sheet URL")
 
 if st.button("Extract & Send"):
     if not uploads:
-        st.error("Please upload at least one receipt image first.")
+        st.error("Please upload at least one receipt image.")
         st.stop()
 
     try:
-        receipts = [
-            extract_receipt_data(load_uploaded_image(u)) for u in uploads
-        ]
+        receipts = [extract_from_easyocr(load_uploaded_image(u)) for u in uploads]
         ws = open_first_worksheet(sheet_url)
 
-        # find first empty template row (Date column blank)
+        # Find first empty row (column B must be blank)
         row = FIRST_DATA_ROW
         while str(ws.cell(row, DATE_COL).value).strip() not in ("", "None", "-"):
             row += 1
         start_row = row
 
-        rows_af, rows_ij = [], []
-        for i, r in enumerate(receipts):
-            receipt_no = (start_row - FIRST_DATA_ROW) + 1 + i
-            rows_af.append([
-                receipt_no, r["Date"], r["Description"], r["Expense Type"],
-                r["Local Amount"], r["Currency"],
-            ])
-            rows_ij.append([r["Project/ Grant"], r["Receipt (Y/N)"]])
+        # Prepare rows for columns B, C, and E (1-based)
+        # Fill in None for column A and D to skip
+        rows = []
+        for r in receipts:
+            date = r["Date"]
+            desc = r["Store"]
+            amt = r["Total"]
+            row_data = ["", date, desc, "", amt]  # A, B, C, D, E
+            rows.append(row_data)
 
-        end_row = start_row + len(receipts) - 1
+        end_row = start_row + len(rows) - 1
 
-        ws.update(f"A{start_row}:F{end_row}", rows_af)
-        ws.update(f"I{start_row}:J{end_row}", rows_ij)
+        # Write B–E only
+        ws.update(f"B{start_row}:E{end_row}", [r[1:5] for r in rows])
 
-        st.success(
-            f"Added **{len(receipts)}** receipt(s) to rows {start_row}–{end_row}."
-        )
-
+        st.success(f"Added **{len(rows)}** receipt(s) to rows {start_row}–{end_row}.")
     except ValueError as ve:
         st.error(str(ve))
     except PermissionError:
-        st.error(
-            "🚫 I don’t have access to that Sheet yet. "
-            f"Share it with **{SERVICE_EMAIL}** as *Editor* and try again."
-        )
+        st.error(f"🚫 Please share the Sheet with **{SERVICE_EMAIL}** as *Editor* and try again.")
     except APIError as ae:
         st.error("Google Sheets API error:"); st.text(str(ae))
     except Exception:
-        st.error("An unexpected error occurred."); st.text(traceback.format_exc())
+        st.error("Unexpected error occurred."); st.text(traceback.format_exc())
+
