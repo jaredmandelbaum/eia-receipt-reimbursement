@@ -44,10 +44,7 @@ def open_first_worksheet(url: str) -> gspread.Worksheet:
     return get_gsheet_client().open_by_key(extract_sheet_id(url)).sheet1
 
 # ─────────────── EasyOCR Setup ───────────────
-@st.cache_resource
-def get_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False)
-reader = get_ocr_reader()
+reader = easyocr.Reader(['en'], gpu=False)
 
 # ─────────────── OCR Extraction ───────────────
 def extract_from_easyocr(img: Image.Image) -> dict:
