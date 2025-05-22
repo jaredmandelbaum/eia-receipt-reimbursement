@@ -7,8 +7,8 @@ Receipt → Google Sheets Reimbursement Tool
 • Append to the first empty template rows in the user’s Google Sheet  
   (columns A-F and I-J only — G & H formulas untouched)
 
-2025-05-20
-• Auth now reads st.secrets["GCREDS_B64"] (Base-64 JSON key)
+2025-05-22
+• Improved store name detection: case-agnostic, structure-based
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ SCOPES = [
 ]
 
 FIRST_DATA_ROW = 19
-DATE_COL        = 2
+DATE_COL = 2
 
 # ─────────── Google-Sheets auth & helpers ────────────
 def get_gsheet_client() -> gspread.Client:
@@ -65,12 +65,20 @@ def preprocess_with_cv2(pil_img: Image.Image) -> Image.Image:
 
 def guess_store_name(merged_lines: list[str]) -> str:
     def score(line, i):
-        penalty = sum(kw in line.lower() for kw in [
-            'server', 'check', 'guest', 'amount', 'tip', 'total', 'tax', 'visa', 'auth'
-        ])
-        bonus = sum(w.istitle() for w in line.split())
-        return -penalty + bonus - 0.2 * i
-    return max(merged_lines[:12], key=lambda l: score(l, merged_lines.index(l)), default="")
+        keywords_to_avoid = [
+            'server', 'check', 'guest', 'amount', 'tip', 'total', 'tax',
+            'visa', 'auth', 'card', 'transaction', 'subtotal', 'date', 'receipt'
+        ]
+        if any(kw in line.lower() for kw in keywords_to_avoid):
+            return -5  # strongly penalize metadata
+
+        word_count = len(line.split())
+        if word_count == 0:
+            return -10  # skip blanks
+
+        return word_count - 0.1 * i  # favor more words, earlier in receipt
+
+    return max(merged_lines[:15], key=lambda l: score(l, merged_lines.index(l)), default="")
 
 def extract_receipt_data(img: Image.Image) -> dict:
     pre_img = preprocess_with_cv2(img)
@@ -79,10 +87,10 @@ def extract_receipt_data(img: Image.Image) -> dict:
     text_4 = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 4")
     text_11 = pytesseract.image_to_string(pre_img, config="--oem 3 --psm 11")
 
-    # Merge and deduplicate top lines
+    # Merge and deduplicate
     lines_4 = [line.strip() for line in text_4.splitlines() if line.strip()]
     lines_11 = [line.strip() for line in text_11.splitlines() if line.strip()]
-    merged_lines = list(dict.fromkeys(lines_11 + lines_4))  # dedup preserving order
+    merged_lines = list(dict.fromkeys(lines_11 + lines_4))
 
     store = guess_store_name(merged_lines)
 
