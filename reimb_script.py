@@ -4,9 +4,6 @@ import base64, json, re, traceback
 from io import BytesIO
 from typing import List
 
-import pillow_heif
-pillow_heif.register_heif_opener()
-
 import gspread, easyocr, numpy as np, streamlit as st
 from PIL import Image, UnidentifiedImageError
 from gspread.exceptions import APIError
@@ -88,7 +85,7 @@ def load_uploaded_image(uploaded) -> Image.Image:
         return img
     except UnidentifiedImageError as e:
         raise ValueError(
-            "Could not open that file as an image (PNG / JPEG / HEIC only). "
+            "Could not open that file as an image (PNG / JPEG only). "
             f"(Pillow error: {e})"
         ) from e
 
@@ -100,7 +97,7 @@ st.markdown(f"""
 """)
 
 uploads: List["UploadedFile"] = st.file_uploader(
-    "Receipt images", type=["png", "jpg", "jpeg", "heic"], accept_multiple_files=True
+    "Receipt images", type=["png", "jpg", "jpeg"], accept_multiple_files=True
 )
 sheet_url = st.text_input("Google Sheet URL")
 
