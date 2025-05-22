@@ -4,5 +4,6 @@ oauth2client
 pillow
 pillow-heif
 easyocr
+torch==2.0.1
 opencv-python-headless
 google-auth
